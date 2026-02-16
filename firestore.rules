@@ -1,0 +1,124 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- HELPER FUNCTIONS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function getUserData(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserData(request.auth.uid).role == 'admin';
+    }
+
+    // --- DEFAULT RULE ---
+    // Deny all reads/writes by default for security.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- USERS ---
+    match /users/{email} {
+      // CREATE: Allow any user to create their own user document upon signup.
+      allow create: if isSignedIn();
+      
+      // READ: 
+      // - Authenticated users can read their own data.
+      // - Admins can read any user's data.
+      // - Any authenticated user can read public profile data of others (for leaderboards, etc).
+      allow read: if isSignedIn() && (
+                    isOwner(email) 
+                    || isAdmin() 
+                    || !('password' in resource.data) // Allow reading if it's a "public" view
+                 );
+
+      // UPDATE:
+      // - Users can update their own profile, but NOT critical fields like role, status, or balances.
+      // - Admins can update any field for any user.
+      allow update: if isSignedIn() && 
+                    (isOwner(email) 
+                      && !(request.resource.data.role != resource.data.role)
+                      && !(request.resource.data.status != resource.data.status)
+                      && !(request.resource.data.deposit != resource.data.deposit)
+                      && !(request.resource.data.winnings != resource.data.winnings)
+                      && !(request.resource.data.totalWinnings != resource.data.totalWinnings)
+                    ) 
+                    || isAdmin();
+      
+      // DELETE: Only admins can delete user accounts.
+      allow delete: if isAdmin();
+    }
+
+    // --- SETTINGS (APP & REFERRAL) ---
+    match /settings/{settingId} {
+      // READ: Anyone can read app settings.
+      allow read: if true;
+      // WRITE: Only admins can change settings.
+      allow write: if isAdmin();
+    }
+
+    // --- MATCHES ---
+    match /matches/{matchId} {
+      // READ: Anyone can read match data.
+      allow read: if true;
+      // WRITE: Only admins can create, update, or delete matches.
+      allow write: if isAdmin();
+    }
+
+    // --- PROMOTIONS ---
+    match /promotions/{promoId} {
+      // READ: Anyone can read promotions.
+      allow read: if true;
+      // WRITE: Only admins can manage promotions.
+      allow write: if isAdmin();
+    }
+    
+    // --- CATEGORIES ---
+    match /categories/{categoryId} {
+      // READ: Anyone can read categories.
+      allow read: if true;
+      // WRITE: Only admins can manage categories.
+      allow write: if isAdmin();
+    }
+
+    // --- PAYMENT METHODS ---
+    match /paymentMethods/{methodId} {
+       // READ: Anyone can read payment methods.
+      allow read: if true;
+      // WRITE: Only admins can manage payment methods.
+      allow write: if isAdmin();
+    }
+    
+    // --- PROMO CODES ---
+    match /promo_codes/{codeId} {
+      // READ: Any signed-in user can read promo codes to check them.
+      allow read: if isSignedIn();
+      // CREATE/DELETE: Only admins can create or delete promo codes.
+      allow create, delete: if isAdmin();
+      // UPDATE:
+      // - Admins can update any field.
+      // - Users can update a code only to add their claim to the 'claimedBy' list.
+      allow update: if isAdmin() || (
+                      isSignedIn() 
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uses', 'claimedBy'])
+                      && request.resource.data.uses == resource.data.uses + 1
+                      && !(request.auth.uid in resource.data.claimedBy)
+                    );
+    }
+    
+    // --- NOTIFICATION HISTORY (For Admin Panel) ---
+    match /notification_history/{notificationId} {
+        // Only admins can read, write, or delete from the global history.
+        allow read, write, delete: if isAdmin();
+    }
+  }
+}
